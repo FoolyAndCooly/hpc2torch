@@ -364,6 +364,12 @@ void softmaxLaunch(void const *input, void *output, int size, int dimsize, int s
             <<<grid_dim, block_dim>>>((T *)input, (T *)output, num_blocks, dimsize, stride);
     }
     cudaDeviceSynchronize();
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+      printf("CUDA error: %s\n", cudaGetErrorString(err));
+  } else {
+      printf("CUDA kernel launched successfully!\n");
+  }
 }
 extern "C" void softmax_nv_f32(void const *input, void *output, int size, int dimsize, int stride)
 {

@@ -32,7 +32,7 @@ def test(test_shape, test_axis, test_dtype, device):
     ndim = len(test_shape)
     size, stride, dimsize = dataPrew(test_shape, test_axis)
     Q = torch.rand(test_shape, device=device, dtype=test_dtype, requires_grad=False)
-    Q_output = torch.zeros(test_shape, device=device, dtype=torch.float32) 
+    Q_output = torch.zeros(test_shape, device=device, dtype=test_dtype) 
 
     input_ptr = ctypes.cast(Q.data_ptr(), ctypes.POINTER(ctypes.c_void_p))
     output_ptr = ctypes.cast(Q_output.data_ptr(), ctypes.POINTER(ctypes.c_void_p))
@@ -95,7 +95,6 @@ def test(test_shape, test_axis, test_dtype, device):
     elif test_dtype == torch.float16:
         if device == "cuda":
             torch_softmax_time = performance.CudaProfile((torch.softmax, (Q, test_axis)))  # 以毫秒为单位
-            '''
             lib.softmax_nv_f16.argtypes = [
                 ctypes.POINTER(ctypes.c_void_p),
                 ctypes.POINTER(ctypes.c_void_p),
@@ -115,6 +114,7 @@ def test(test_shape, test_axis, test_dtype, device):
                 ctypes.c_int
             ]
             custom_softmax_time = performance.CudaProfile((lib.softmax_cudnn_f16, (input_ptr, output_ptr, ctypes_array, ndim)))
+	    '''
         if device == "cpu":
             torch_softmax_time = performance.CpuProfile((torch.softmax, (Q, test_axis)))  # 以毫秒为单位
             lib.softmax_cpu_f16.argtypes = [

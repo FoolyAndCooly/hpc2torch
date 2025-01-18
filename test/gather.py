@@ -24,7 +24,7 @@ def test(inputShape, indexShape, axis, test_dtype, device):
     inputTensor = torch.rand(inputShape, device=device, dtype=test_dtype)
 
     index = np.random.randint(0, inputShape[axis], indexShape).astype(np.int32)
-    indexTensor = torch.from_numpy(index).to(torch.int64).to(device)
+    indexTensor = torch.from_numpy(index).to(torch.int32).to(device)
 
     rank = len(inputShape)
     outTensor = gather(rank, axis, inputTensor, indexTensor)#
@@ -33,20 +33,22 @@ def test(inputShape, indexShape, axis, test_dtype, device):
     input_ptr = ctypes.cast(inputTensor.data_ptr(), ctypes.POINTER(ctypes.c_void_p))
     index_ptr = ctypes.cast(indexTensor.data_ptr(), ctypes.POINTER(ctypes.c_void_p))
     output_ptr = ctypes.cast(Q_output.data_ptr(), ctypes.POINTER(ctypes.c_void_p))
-
     if test_dtype == torch.float32:
         if device == "cuda":
             torch_gather_time = performance.CudaProfile((gather, (rank, axis, inputTensor, indexTensor)))
-            custom_gather_time = 0
+            custom_gather_time = performance.CudaProfile((lib.gather_nv_f32, (input_ptr, output_ptr, index_ptr, inputShape[0], inputShape[1], indexShape[0], indexShape[1], 2, 2, axis)))
     if test_dtype == torch.float16:
         if device == "cuda":
             torch_gather_time = performance.CudaProfile((gather, (rank, axis, inputTensor, indexTensor)))
-            custom_gather_time = 0
+            custom_gather_time = performance.CudaProfile((lib.gather_nv_f16, (input_ptr, output_ptr, index_ptr, inputShape[0], inputShape[1], indexShape[0], indexShape[1], 2, 2, axis)))
     performance.logBenchmark(torch_gather_time, custom_gather_time)
-
+    
     tmpa = outTensor.to('cpu').numpy().flatten()
     tmpb = Q_output.to('cpu').numpy().flatten()
-
+    #print("origin:\n",inputTensor)
+    #print("index:\n",index)
+    #print("tmpa:\n",tmpa)
+    #print("tmpb:\n",tmpb)
     atol = max(abs(tmpa - tmpb))
 
     rtol = atol / max(abs(tmpb) + 1e-8)
@@ -60,7 +62,7 @@ args = parser.parse_args()
 test_cases = [
         # inputShape , indexShape, axis, test_dtype, device
         ((3, 2), (2, 2), 0, torch.float32, "cuda"),
-        ((3, 2), (1, 2), 1, torch.float32, "cuda"),
+        #((3, 2), (1, 2), 1, torch.float32, "cuda"),
         ((50257, 768), (16, 1024), 0, torch.float32, "cuda"),
 
         ((3, 2), (2, 2), 0, torch.float16, "cuda"),

@@ -61,6 +61,7 @@ void softmax_cpu(void const *input, void *output, int size, int dimsize, int str
 }
 extern "C" void softmax_cpu_f32(void const *input, void *output, int size, int dimsize, int stride)
 {
+    printf("%f\n", *(reinterpret_cast<const float *>(input)));
     softmax_cpu<float>(input, output, size, dimsize, stride);
 }
 extern "C" void softmax_cpu_f16(void const *input, void *output, int size, int dimsize, int stride)

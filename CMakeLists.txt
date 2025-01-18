@@ -7,7 +7,9 @@ find_package(Python3 REQUIRED)
 include_directories(${Python3_INCLUDE_DIRS})
 
 # 设置 CUDA 编译选项
-set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -O3")
+set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -O3 -arch=sm_70")
+set(CUDA_ARCHITECTURES 70)
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode arch=compute_70,code=sm_70")
 
 # 添加选项控制不同的编译方式
 option(USE_CUDA "Enable CUDA compilation" OFF)
@@ -17,6 +19,7 @@ option(USE_CPU "Enable CPU-only compilation" OFF)
 # 查找源文件
 # 添加头文件搜索路径  
 include_directories(${PROJECT_SOURCE_DIR}/include)
+include_directories(/usr/local/cuda-11.8/include)
 
 #使用 GLOB 命令找到 include/ 下的所有 .cpp 文件
 file(GLOB INCLUDE_SOURCE_FILES "include/**.cpp")
@@ -43,7 +46,7 @@ if(USE_CUDA)
     list(APPEND ALL_SOURCE_FILES ${CUDA_SOURCE_FILES} ${CPP_SOURCE_FILES})
     add_library(my_library SHARED ${ALL_SOURCE_FILES})# 创建库或可执行文件
     set_target_properties(my_library PROPERTIES
-        CUDA_ARCHITECTURES 80
+        CUDA_ARCHITECTURES 70
     )
     target_link_libraries(my_library cudnn cublas)#如果调用cudnn库需要链接cudnn, cublas
 

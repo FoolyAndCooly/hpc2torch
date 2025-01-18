@@ -4,7 +4,7 @@ TYPE ?= Release
 
 build:
 	mkdir -p build
-	cmake -Bbuild -DCMAKE_BUILD_TYPE=$(TYPE) -DUSE_CUDA=ON
+	cmake -Bbuild -DCMAKE_CUDA_FLAGS="-G" -DCMAKE_CUDA_COMPILER=/usr/local/cuda-11.8/bin/nvcc -DCMAKE_BUILD_TYPE=$(TYPE) -DUSE_CUDA=ON
 	make -j -C build
 
 clean:
