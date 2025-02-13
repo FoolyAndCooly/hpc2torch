@@ -1,141 +1,153 @@
-#include <cuda_fp16.h>
-#include <stdio.h>
-template <typename T>
-__global__ void gatherKernel0_v2(T const*input, T* output, int const* indices, int inputShape0, int inputShape1, int indicesShape0, int indicesShape1, int inputAxis, int indicesAxis)
-{
-  int outputShape[2];
-  outputShape[0] = indicesShape0;
-  outputShape[1] = indicesShape1 * inputShape1;
-  
-  int j = threadIdx.x + blockIdx.x*blockDim.x;
-  int k = (threadIdx.y + blockIdx.y*blockDim.y) << 2;
+#include <cuda.h>
+#include <cub/cub.cuh>
 
-  int t0 = j * inputShape1;
-  for (int i = 0; i < indicesShape0; i += 4) {
-      int indice_0 = indices[(i+0) * indicesShape1 + j];
-      int t1_0 = indice_0 * inputShape1;
-      int t2_0 = (i+0) * outputShape[1];
-      if constexpr (std::is_same<T, float>::value) (float4 &)output[t2_0 + (t0 + k)] = (float4 &)input[t1_0 + k];
-      else if constexpr (std::is_same<T, half>::value) (float2 &)output[t2_0 + (t0 + k)] = (float2 &)input[t1_0 + k];
-
-      int indice_1 = indices[(i+1) * indicesShape1 + j];
-      int t1_1 = indice_1 * inputShape1;
-      int t2_1 = (i+1) * outputShape[1];
-      if constexpr (std::is_same<T, float>::value) (float4 &)output[t2_1 + (t0 + k)] = (float4 &)input[t1_1 + k];
-      else if constexpr (std::is_same<T, half>::value) (float2 &)output[t2_1 + (t0 + k)] = (float2 &)input[t1_1 + k];
-
-      int indice_2 = indices[(i+2) * indicesShape1 + j];
-      int t1_2 = indice_2 * inputShape1;
-      int t2_2 = (i+2) * outputShape[1];
-      if constexpr (std::is_same<T, float>::value) (float4 &)output[t2_2 + (t0 + k)] = (float4 &)input[t1_2 + k];
-      else if constexpr (std::is_same<T, half>::value) (float2 &)output[t2_2 + (t0 + k)] = (float2 &)input[t1_2 + k];
-
-      int indice_3 = indices[(i+3) * indicesShape1 + j];
-      int t1_3 = indice_3 * inputShape1;
-      int t2_3 = (i+3) * outputShape[1];
-      if constexpr (std::is_same<T, float>::value) (float4 &)output[t2_3 + (t0 + k)] = (float4 &)input[t1_3 + k];
-      else if constexpr (std::is_same<T, half>::value) (float2 &)output[t2_3 + (t0 + k)] = (float2 &)input[t1_3 + k];
-  }
+inline int getdim(int num) {
+  if (num > 31) return 32;
+  else if (num > 15) return 16;
+  else if (num > 7) return 8;
+  return 4;
 }
 
-template <typename T>
-__global__ void gatherKernel01(T const*input, T* output, int const* indices, int inputShape0, int inputShape1, int indicesShape0, int indicesShape1, int inputAxis, int indicesAxis)
-{
-  int outputShape[2];
-  int indice;
-  outputShape[0] = indicesShape0;
-  outputShape[1] = indicesShape1 * inputShape1;
-  int i = threadIdx.x + blockIdx.x*blockDim.x;
-  for (int j = 0; j < indicesShape1; j++) {
-    indice = indices[i * indicesShape1 + j];
-    for (int k = 0; k < inputShape1; k++) {
-      output[i * outputShape[1] + j * inputShape1 + k] = input[(indice * inputShape1) + k];
-    }
-  }
+inline int getT(int num) {
+  if (num > 128) return 4;
+  else if (num > 16) return 2;
+  return 1;
 }
 
-template <typename T>
-__global__ void gatherKernel1(T const*input, T* output, int const* indices, int inputShape0, int inputShape1, int indicesShape0, int indicesShape1, int inputAxis, int indicesAxis)
+template <typename T, typename Tind>
+__global__ void warpGatherKernel_v1(T const *input, Tind const *indices, T *output, int stride, int indSize)
 {
-  int outputShape[2];
-  int indice;
-  outputShape[0] = indicesShape0 * inputShape0;
-  outputShape[1] = indicesShape1;
-  int i = threadIdx.x + blockIdx.x*blockDim.x;
-  for (int j = 0; j < indicesShape1; j++) {
-    indice = indices[i * indicesShape1 + j];
-    for (int k = 0; k < inputShape0; k++) {
-      output[(i * inputShape0 + k) * outputShape[1] + j] = input[(k * inputShape1) + indice];
-    }
-  }
+    int otherIdx = blockIdx.x * blockDim.x + threadIdx.x;
+    int index = blockIdx.y * blockDim.y + threadIdx.y;
+    int tid = otherIdx % stride + (otherIdx - otherIdx % stride) * indSize;
+    output[tid + index * stride] = input[tid + indices[index] * stride];
 }
 
-template <typename T>
-void gatherLaunch(void const*input, void* output, void const* indices, int inputShape0, int inputShape1, int indicesShape0, int indicesShape1, int inputAxis, int indicesAxis, int axis) {
-  if (axis == 0) {
-    if (inputShape1 > 32) {
-    int BLOCK_DIM_x = 16;
-    int num_block_x = (indicesShape1 + BLOCK_DIM_x - 1) / BLOCK_DIM_x;
-    int BLOCK_DIM_y = 32;
-    int num_block_y = ((inputShape1>>2) + BLOCK_DIM_y - 1) / BLOCK_DIM_y;
-    int blockSize = BLOCK_DIM_x * BLOCK_DIM_y;
-  
-    dim3 grid_dim(num_block_x, num_block_y, 1);
+
+
+template <typename T, typename Tind>
+void gatherLaunch_v1(void const *input, void const *indices, void *output, int stride, int indSize, int othersize)
+{
+    int BLOCK_DIM_x = getdim(othersize);
+    int BLOCK_DIM_y = getdim(indSize);
+    int num_block_x = (othersize + BLOCK_DIM_x - 1) / BLOCK_DIM_x;
+    int num_block_y = (indSize + BLOCK_DIM_y - 1) / BLOCK_DIM_y;
     dim3 block_dim(BLOCK_DIM_x, BLOCK_DIM_y, 1);
-  
-    gatherKernel0_v2<T><<<grid_dim, block_dim>>>((T const*)input, (T*)output, (int const*)indices, inputShape0, inputShape1, indicesShape0, indicesShape1, inputAxis, indicesAxis);
-    }
-    else {
-      int BLOCK_DIM_x = 1;
-      int num_block_x = (indicesShape1 + BLOCK_DIM_x - 1) / BLOCK_DIM_x;
-      int blockSize = BLOCK_DIM_x;
-  
-      dim3 grid_dim(num_block_x, 1, 1);
-      dim3 block_dim(BLOCK_DIM_x, 1, 1);
- 
-      gatherKernel01<T><<<grid_dim, block_dim>>>((T const*)input, (T*)output, (int const*)indices, inputShape0, inputShape1, indicesShape0, indicesShape1, inputAxis, indicesAxis);
-    }
-  }
-  else{ 
-    int BLOCK_DIM_x = 32;
-    int num_block_x = (indicesShape1 + BLOCK_DIM_x - 1) / BLOCK_DIM_x;
-    int blockSize = BLOCK_DIM_x;
-  
-    dim3 grid_dim(num_block_x, 1, 1);
-    dim3 block_dim(BLOCK_DIM_x, 1, 1);
- 
-    gatherKernel1<T><<<grid_dim, block_dim>>>((T const*)input, (T*)output, (int const*)indices, inputShape0, inputShape1, indicesShape0, indicesShape1, inputAxis, indicesAxis);
-  }
-  cudaDeviceSynchronize();
+    dim3 grid_dim(num_block_x, num_block_y, 1);
 
-  // int device;
-  // cudaGetDevice(&device); 
-  // int maxActiveBlocks;
-  // cudaOccupancyMaxActiveBlocksPerMultiprocessor(&maxActiveBlocks, (void*)gatherKernel0_v2<float>, blockSize, 0);
-  // int blockThreads;
-  // int smThreads;
-  // cudaOccupancyMaxPotentialBlockSize(&blockThreads, &smThreads, (void*)gatherKernel0_v2<float>, 0, 0);
-  // printf("Max Active Blocks per SM: %d\n", maxActiveBlocks);
-  // printf("Threads per Block: %d\n", blockSize);
-  // printf("Max Threads per SM: %d\n" , smThreads);
-  // float occupancy = (float)(maxActiveBlocks * blockSize) / smThreads;
-  // printf("Occupancy: %f \n", occupancy * 100);
-  //cudaError_t err = cudaGetLastError();
-  //int sharedMemPerBlock;
-  //cudaDeviceGetAttribute(&sharedMemPerBlock, cudaDevAttrMaxSharedMemoryPerBlock, 0);
-  //printf("max shared memory: %d\n", sharedMemPerBlock);
-  //if (err != cudaSuccess) {
-  //    printf("CUDA error: %s\n", cudaGetErrorString(err));
-  //} else {
-  //    printf("CUDA kernel launched successfully!\n");
-  //}
+    warpGatherKernel_v1<T, Tind>
+        <<<grid_dim, block_dim>>>((T *)input, (Tind *)indices, (T *)output, stride, indSize);
 }
 
-extern "C" void gather_nv_f32(void const*input, void* output, void const* indices, int inputShape0, int inputShape1, int indicesShape0, int indicesShape1, int inputAxis, int indicesAxis, int axis)
+template <typename T, typename Tind>
+__global__ void warpGatherKernel_v2(T const *input, Tind const *indices, T *output, int stride, int indSize, int TM, int TN)
 {
-    gatherLaunch<float>(input, output, indices, inputShape0, inputShape1, indicesShape0, indicesShape1, inputAxis, indicesAxis, axis);
+    int otherIdx = (blockIdx.x * blockDim.x + threadIdx.x) * TM;
+    int index = (blockIdx.y * blockDim.y + threadIdx.y) * TN;
+    
+    __shared__ int s_indices[1024];
+    #pragma unroll 
+    for (int cycle = 0; cycle < (TN - 1)/ blockDim.x; cycle++) {
+        int indx = cycle * blockDim.x + threadIdx.x;
+        s_indices[threadIdx.y * TN + indx] = indices[index + indx];
+    }
+
+    if (threadIdx.x < TN % blockDim.x) {
+        s_indices[threadIdx.y * TN + threadIdx.x] = indices[index + threadIdx.x];
+    }
+    __syncthreads();
+
+    #pragma unroll
+    for (int i = 0; i < TM; i++) {
+        int otherIdx_ = otherIdx + i;
+        int tid = otherIdx_ % stride + (otherIdx_ - otherIdx_ % stride) * indSize; // tid = s + i(BCD)
+        #pragma unroll
+        for (int j = 0; j < TN; j++) {
+	  int index_ = index + j;
+           output[tid + index_ * stride] = input[tid + s_indices[threadIdx.y * TN + j] * stride];
+	}
+    }
 }
-extern "C" void gather_nv_f16(void const*input, void* output, void const* indices, int inputShape0, int inputShape1, int indicesShape0, int indicesShape1, int inputAxis, int indicesAxis, int axis)
+
+
+
+template <typename T, typename Tind>
+void gatherLaunch_v2(void const *input, void const *indices, void *output, int stride, int indSize, int othersize)
 {
-     gatherLaunch<half>(input, output, indices, inputShape0, inputShape1, indicesShape0, indicesShape1, inputAxis, indicesAxis, axis);
+    int TM = getT(othersize);
+    int TN = getT(indSize);
+    int othersize_ = othersize / TM;
+    int indSize_ = indSize / TN;
+    int BLOCK_DIM_x = getdim(othersize_);
+    int BLOCK_DIM_y = getdim(indSize_);
+    int num_block_x = (othersize_ + BLOCK_DIM_x - 1) / BLOCK_DIM_x;
+    int num_block_y = (indSize_ + BLOCK_DIM_y - 1) / BLOCK_DIM_y;
+    dim3 block_dim(BLOCK_DIM_x, BLOCK_DIM_y, 1);
+    dim3 grid_dim(num_block_x, num_block_y, 1);
+
+    warpGatherKernel_v2<T, Tind>
+        <<<grid_dim, block_dim>>>((T *)input, (Tind *)indices, (T *)output, stride, indSize, TM, TN);
+}
+
+template <typename T, typename Tind>
+__global__ void warpGatherKernel_v3(T const *input, Tind const *indices, T *output, int stride, int indSize, int TM, int TN)
+{
+    int otherIdx = (blockIdx.x * blockDim.x + threadIdx.x) * TM;
+    int index = (blockIdx.y * blockDim.y + threadIdx.y) * TN;
+    
+    __shared__ int s_indices[1024];
+    #pragma unroll 
+    for (int cycle = 0; cycle < (TN - 1)/ blockDim.x; cycle++) {
+        int indx = cycle * blockDim.x + threadIdx.x;
+        s_indices[threadIdx.y * TN + indx] = indices[index + indx];
+    }
+
+    if (threadIdx.x < TN % blockDim.x) {
+        s_indices[threadIdx.y * TN + threadIdx.x] = indices[index + threadIdx.x];
+    }
+    __syncthreads();
+
+    int tid = otherIdx % stride + (otherIdx - otherIdx % stride) * indSize; // tid = s + i(BCD)
+    #pragma unroll
+    for (int j = 0; j < TN; j++) {
+      int index_ = index + j;
+      if constexpr (std::is_same<T, float>::value) {
+          if (TM == 4)(float4 &)output[tid + index_ * stride] = (float4 &)input[tid + s_indices[threadIdx.y * TN + j] * stride];
+          else if (TM == 2)(float2 &)output[tid + index_ * stride] = (float2 &)input[tid + s_indices[threadIdx.y * TN + j] * stride];
+          else (float &)output[tid + index_ * stride] = (float &)input[tid + s_indices[threadIdx.y * TN + j] * stride];
+      } else {
+          if (TM == 4)(float2 &)output[tid + index_ * stride] = (float2 &)input[tid + s_indices[threadIdx.y * TN + j] * stride];
+          else if (TM == 2)(half2 &)output[tid + index_ * stride] = (half2 &)input[tid + s_indices[threadIdx.y * TN + j] * stride];
+          else (half &)output[tid + index_ * stride] = (half &)input[tid + s_indices[threadIdx.y * TN + j] * stride];
+      }
+    }
+}
+
+template <typename T, typename Tind>
+void gatherLaunch_v3(void const *input, void const *indices, void *output, int stride, int indSize, int othersize)
+{
+    int TM = getT(othersize);
+    int TN = getT(indSize);
+    // printf("stride: %d, indSize: %d, othersize: %d, TM: %d, TN: %d\n", stride, indSize, othersize, TM, TN);
+    int othersize_ = othersize / TM;
+    int indSize_ = indSize / TN;
+    int BLOCK_DIM_x = getdim(othersize_);
+    int BLOCK_DIM_y = getdim(indSize_);
+    int num_block_x = (othersize_ + BLOCK_DIM_x - 1) / BLOCK_DIM_x;
+    int num_block_y = (indSize_ + BLOCK_DIM_y - 1) / BLOCK_DIM_y;
+    dim3 block_dim(BLOCK_DIM_x, BLOCK_DIM_y, 1);
+    dim3 grid_dim(num_block_x, num_block_y, 1);
+
+    warpGatherKernel_v3<T, Tind>
+        <<<grid_dim, block_dim>>>((T *)input, (Tind *)indices, (T *)output, stride, indSize, TM, TN);
+}
+
+
+extern "C" void gather_nv_f32(void const *input, void const *indices, void *output, int stride, int indSize, int othersize)
+{
+    gatherLaunch_v3<float, uint64_t>(input, indices, output, stride, indSize, othersize);
+}
+extern "C" void gather_nv_f16(void const *input, void const *indices, void *output, int stride, int indSize, int othersize)
+{
+    gatherLaunch_v3<half, uint64_t>(input, indices, output, stride, indSize, othersize);
 }
